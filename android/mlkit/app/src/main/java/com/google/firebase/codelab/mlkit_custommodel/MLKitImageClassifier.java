@@ -61,8 +61,8 @@ public class MLKitImageClassifier {
     /**
      * Name of the model file hosted with Firebase.
      */
-    private static final String HOSTED_MODEL_NAME = "mobilenet_v1_224_quant";
-    private static final String LOCAL_MODEL_ASSET = "mobilenet_v1.0_224_quant.tflite";
+    private static final String HOSTED_MODEL_NAME = "mobilenet_v1_224";
+    private static final String LOCAL_MODEL_ASSET = "mobilenet_v1.0_224.tflite";
     /**
      * Name of the label file stored in Assets.
      */
@@ -78,9 +78,14 @@ public class MLKitImageClassifier {
     private static final int DIM_PIXEL_SIZE = 3;
     static final int DIM_IMG_SIZE_X = 224;
     static final int DIM_IMG_SIZE_Y = 224;
+    private static final int IMAGE_MEAN = 128;
+    private static final float IMAGE_STD = 128.0f;
 
     /* Preallocated buffers for storing image data in. */
     private int[] intValues = new int[DIM_IMG_SIZE_X * DIM_IMG_SIZE_Y];
+
+    /** A ByteBuffer to hold image data, to be feed into Tensorflow Lite as inputs. */
+    ByteBuffer imgData = null;
 
     /**
      * Labels corresponding to the output of the vision model.
@@ -114,13 +119,19 @@ public class MLKitImageClassifier {
     MLKitImageClassifier(Activity activity) throws IOException {
         labelList = loadLabelList(activity);
 
+        // putFloat writes 4 bytes; if using ints, only 1 byte is written
+        imgData =
+                ByteBuffer.allocateDirect(
+                        4 * DIM_BATCH_SIZE * DIM_IMG_SIZE_X * DIM_IMG_SIZE_Y * DIM_PIXEL_SIZE);
+        imgData.order(ByteOrder.nativeOrder());
+
         int[] inputDims = {DIM_BATCH_SIZE, DIM_IMG_SIZE_X, DIM_IMG_SIZE_Y, DIM_PIXEL_SIZE};
         int[] outputDims = {DIM_BATCH_SIZE, labelList.size()};
         try {
             mDataOptions =
                     new FirebaseModelInputOutputOptions.Builder()
-                            .setInputFormat(0, FirebaseModelDataType.BYTE, inputDims)
-                            .setOutputFormat(0, FirebaseModelDataType.BYTE, outputDims)
+                            .setInputFormat(0, FirebaseModelDataType.FLOAT32, inputDims)
+                            .setOutputFormat(0, FirebaseModelDataType.FLOAT32, outputDims)
                             .build();
             FirebaseModelDownloadConditions conditions = new FirebaseModelDownloadConditions
                     .Builder()
@@ -178,14 +189,7 @@ public class MLKitImageClassifier {
     /**
      * Writes Image data into a {@code ByteBuffer}.
      */
-    private synchronized ByteBuffer convertBitmapToByteBuffer(
-            Bitmap bitmap, int width, int height) {
-        ByteBuffer imgData =
-                ByteBuffer.allocateDirect(
-                        DIM_BATCH_SIZE * DIM_IMG_SIZE_X * DIM_IMG_SIZE_Y * DIM_PIXEL_SIZE);
-        imgData.order(ByteOrder.nativeOrder());
-        Bitmap scaledBitmap = Bitmap.createScaledBitmap(bitmap, DIM_IMG_SIZE_X, DIM_IMG_SIZE_Y,
-                true);
+    private synchronized void convertBitmapToByteBuffer(Bitmap scaledBitmap) {
         imgData.rewind();
         scaledBitmap.getPixels(intValues, 0, scaledBitmap.getWidth(), 0, 0,
                 scaledBitmap.getWidth(), scaledBitmap.getHeight());
@@ -199,7 +203,6 @@ public class MLKitImageClassifier {
                 imgData.put((byte) (val & 0xFF));
             }
         }
-        return imgData;
     }
 
     /**
@@ -210,9 +213,8 @@ public class MLKitImageClassifier {
             Log.e(TAG, "Image classifier has not been initialized; Skipped.");
             return "Interpreter not initialized!";
         }
-        // Create input data.
-        ByteBuffer imgData = convertBitmapToByteBuffer(bitmap, bitmap.getWidth(),
-                bitmap.getHeight());
+        // Create input data, writing to imgData
+        convertBitmapToFloatByteBuffer(bitmap);
 
         try {
             FirebaseModelInputs inputs = new FirebaseModelInputs.Builder().add(imgData).build();
@@ -231,8 +233,8 @@ public class MLKitImageClassifier {
                                     new Continuation<FirebaseModelOutputs, List<String>>() {
                                         @Override
                                         public List<String> then(Task<FirebaseModelOutputs> task) {
-                                            byte[][] labelProbArray = task.getResult()
-                                                    .<byte[][]>getOutput(0);
+                                            float[][] labelProbArray = task.getResult()
+                                                    .<float[][]>getOutput(0);
                                             List<String> topLabels = getTopLabels(labelProbArray);
                                             return topLabels;
                                         }
@@ -251,11 +253,10 @@ public class MLKitImageClassifier {
         }
     }
 
-    private synchronized List<String> getTopLabels(byte[][] labelProbArray) {
+    private synchronized List<String> getTopLabels(float[][] labelProbArray) {
         for (int i = 0; i < labelList.size(); ++i) {
             sortedLabels.add(
-                    new AbstractMap.SimpleEntry<>(labelList.get(i), (labelProbArray[0][i] &
-                            0xff) / 255.0f));
+                    new AbstractMap.SimpleEntry<>(labelList.get(i), labelProbArray[0][i]));
             if (sortedLabels.size() > RESULTS_TO_SHOW) {
                 sortedLabels.poll();
             }
@@ -279,8 +280,7 @@ public class MLKitImageClassifier {
     /**
      * Writes Image data into a {@code ByteBuffer}.
      */
-    /*
-    private void convertBitmapToFloatByteBuffer(Bitmap bitmap) {
+    private synchronized void convertBitmapToFloatByteBuffer(Bitmap bitmap) {
         if (imgData == null) {
             return;
         }
@@ -300,6 +300,4 @@ public class MLKitImageClassifier {
         long endTime = SystemClock.uptimeMillis();
         Log.d(TAG, "Timecost to put values into ByteBuffer: " + Long.toString(endTime - startTime));
     }
-    */
-
 }
